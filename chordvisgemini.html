@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Real-Time Chord Visualizer</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      /* Custom styles for the canvas and overall look */
+      body {
+        font-family: "Inter", sans-serif;
+        background-color: #1a1a2e; /* Dark background */
+      }
+      #visualizer-canvas {
+        background-color: #0f0f23; /* Darker background for the canvas */
+        border-radius: 0.75rem; /* rounded-xl */
+        box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5),
+          0 4px 6px -2px rgba(0, 0, 0, 0.4);
+        cursor: crosshair;
+      }
+    </style>
+    <!-- Firebase Imports (Mandatory inclusion for the environment) -->
+    <script type="module">
+      import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+      import {
+        getAuth,
+        signInAnonymously,
+        signInWithCustomToken,
+      } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+      import { getFirestore } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+      import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app-check.js";
+
+      // Global variables provided by the Canvas environment
+      const appId =
+        typeof __app_id !== "undefined" ? __app_id : "default-app-id";
+      const firebaseConfig =
+        typeof __firebase_config !== "undefined"
+          ? JSON.parse(__firebase_config)
+          : null;
+      const initialAuthToken =
+        typeof __initial_auth_token !== "undefined"
+          ? __initial_auth_token
+          : null;
+
+      if (firebaseConfig) {
+        try {
+          // Initialize Firebase
+          const app = initializeApp(firebaseConfig);
+          const db = getFirestore(app);
+          const auth = getAuth(app);
+
+          // Set Firestore logging to Debug (optional, for debugging rules)
+          // setLogLevel('Debug');
+
+          // Sign in logic
+          const attemptAuth = async () => {
+            if (initialAuthToken) {
+              await signInWithCustomToken(auth, initialAuthToken);
+              console.log("Firebase Auth: Signed in with custom token.");
+            } else {
+              await signInAnonymously(auth);
+              console.log("Firebase Auth: Signed in anonymously.");
+            }
+            // We don't use Firestore for this visualizer, but this ensures environment compatibility.
+          };
+
+          attemptAuth().catch((error) => {
+            console.error("Firebase Authentication Error:", error);
+          });
+        } catch (error) {
+          console.error("Firebase Initialization Error:", error);
+        }
+      }
+    </script>
+  </head>
+  <body
+    class="p-4 sm:p-8 min-h-screen flex flex-col items-center justify-center"
+  >
+    <div class="max-w-4xl w-full">
+      <h1
+        class="text-3xl sm:text-4xl font-bold text-center text-indigo-400 mb-4"
+      >
+        Spectrum Visualizer (DAW Style)
+      </h1>
+      <p id="status-message" class="text-center text-sm mb-6 text-gray-400">
+        Click 'Start Visualizer' to enable your microphone and see the frequency
+        spectrum.
+      </p>
+
+      <!-- Main Visualizer Card -->
+      <div class="bg-gray-800 p-4 sm:p-6 rounded-2xl shadow-2xl">
+        <!-- Control Panel -->
+        <div
+          class="flex flex-col sm:flex-row justify-center items-center mb-4 space-y-2 sm:space-y-0 sm:space-x-4"
+        >
+          <button
+            id="startButton"
+            class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 px-6 rounded-lg transition duration-300 transform hover:scale-[1.02] shadow-md"
+          >
+            Start Visualizer
+          </button>
+          <button
+            id="stopButton"
+            class="bg-red-600 hover:bg-red-700 text-white font-semibold py-2 px-6 rounded-lg transition duration-300 transform hover:scale-[1.02] shadow-md hidden"
+            disabled
+          >
+            Stop Visualizer
+          </button>
+        </div>
+
+        <!-- Canvas for Visualization -->
+        <canvas id="visualizer-canvas" class="w-full" height="300"></canvas>
+
+        <!-- Information Display -->
+        <div
+          class="mt-4 text-center text-sm text-gray-400 p-2 border-t border-gray-700"
+        >
+          <p>
+            <span class="font-bold text-indigo-300">Analysis:</span> The highest
+            peaks represent the fundamental and harmonic frequencies of the
+            notes you play.
+          </p>
+          <p id="peak-info" class="mt-1 text-xs text-green-400"></p>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      // --- Global Variables and Constants ---
+      let audioContext;
+      let analyser;
+      let source;
+      let dataArray;
+      let animationFrameId;
+
+      const canvas = document.getElementById("visualizer-canvas");
+      const canvasCtx = canvas.getContext("2d");
+      const startButton = document.getElementById("startButton");
+      const stopButton = document.getElementById("stopButton");
+      const statusMessage = document.getElementById("status-message");
+      const peakInfo = document.getElementById("peak-info");
+
+      // Note Frequencies for Reference (C4, E4, G4 - C Major Triad)
+      // This is for display reference, the visualizer reads all frequencies.
+      const C4_FREQ = 261.63;
+      const E4_FREQ = 329.63;
+      const G4_FREQ = 392.0;
+
+      // --- Utility Functions ---
+
+      /**
+       * Converts a frequency (Hz) to a musical note name (e.g., 440 Hz -> A4).
+       * @param {number} frequency - The frequency in Hertz.
+       * @returns {string} The note name (e.g., "C4").
+       */
+      function frequencyToNoteName(frequency) {
+        const A4 = 440; // Reference pitch
+        const C0 = A4 * Math.pow(2, -4.75); // Frequency of C0
+        const halfSteps = 12 * Math.log2(frequency / C0);
+        const noteIndex = Math.round(halfSteps);
+        const noteNames = [
+          "C",
+          "C#",
+          "D",
+          "D#",
+          "E",
+          "F",
+          "F#",
+          "G",
+          "G#",
+          "A",
+          "A#",
+          "B",
+        ];
+        const note = noteNames[noteIndex % 12];
+        const octave = Math.floor(noteIndex / 12);
+        return `${note}${octave}`;
+      }
+
+      /**
+       * Calculates the size of the canvas based on the current window size.
+       */
+      function resizeCanvas() {
+        canvas.width = canvas.offsetWidth;
+        canvas.height = canvas.offsetHeight;
+      }
+
+      // --- Core Visualizer Logic ---
+
+      /**
+       * Cleans up all audio resources and stops the animation loop.
+       */
+      function cleanupAudio() {
+        if (animationFrameId) {
+          cancelAnimationFrame(animationFrameId);
+        }
+        if (audioContext && audioContext.state !== "closed") {
+          audioContext.close().then(() => {
+            console.log("AudioContext closed.");
+            audioContext = null;
+          });
+        }
+        if (source) {
+          // If it's a MediaStreamSourceNode, the underlying stream needs to be stopped.
+          source.mediaStream.getTracks().forEach((track) => track.stop());
+          source = null;
+        }
+
+        // Clear the canvas
+        canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
+
+        // Update UI
+        startButton.classList.remove("hidden");
+        startButton.disabled = false;
+        stopButton.classList.add("hidden");
+        stopButton.disabled = true;
+        statusMessage.textContent =
+          "Visualizer stopped. Click 'Start Visualizer' to analyze audio again.";
+        peakInfo.textContent = "";
+      }
+
+      /**
+       * Draws the frequency spectrum onto the canvas.
+       */
+      function draw() {
+        // Schedule the next frame
+        animationFrameId = requestAnimationFrame(draw);
+
+        // Get the current frequency data
+        analyser.getByteFrequencyData(dataArray);
+
+        const width = canvas.width;
+        const height = canvas.height;
+        const bufferLength = analyser.frequencyBinCount;
+        const barWidth = (width / bufferLength) * 2.5; // Adjust width for visualization density
+        let x = 0;
+
+        // Clear the canvas
+        canvasCtx.fillStyle = "#0f0f23"; // Dark background
+        canvasCtx.fillRect(0, 0, width, height);
+
+        // Find the peak frequency for display
+        let maxAmplitude = 0;
+        let peakFrequencyBin = 0;
+
+        // 1. Draw Bars and find the peak
+        for (let i = 0; i < bufferLength; i++) {
+          const amplitude = dataArray[i];
+
+          // Track the highest peak (excluding the very low frequencies which are often noise)
+          if (i > 2 && amplitude > maxAmplitude) {
+            maxAmplitude = amplitude;
+            peakFrequencyBin = i;
+          }
+
+          // Bar height is normalized to canvas height
+          const barHeight = (amplitude / 256) * height;
+
+          // Gradient Fill based on amplitude
+          const hue = 240 - (amplitude * 240) / 256; // Blue/Indigo color shift
+          canvasCtx.fillStyle = `hsl(${hue}, 80%, 60%)`;
+
+          // Draw the bar (from the bottom up)
+          canvasCtx.fillRect(x, height - barHeight, barWidth, barHeight);
+
+          x += barWidth + 1; // 1px space between bars
+        }
+
+        // 2. Display Peak Frequency/Note
+        if (maxAmplitude > 10) {
+          // Only show info if the peak is above background noise
+          const sampleRate = audioContext.sampleRate;
+          const frequencyResolution = sampleRate / analyser.fftSize;
+          const peakHz = peakFrequencyBin * frequencyResolution;
+          const peakNote = frequencyToNoteName(peakHz);
+
+          peakInfo.textContent = `Current Peak: ${peakNote} (${peakHz.toFixed(
+            2
+          )} Hz) | Amplitude: ${maxAmplitude}`;
+        } else {
+          peakInfo.textContent = "Playing nothing or too quiet...";
+        }
+
+        // 3. Draw Grid Lines (Reference Frequencies: C4, E4, G4)
+        canvasCtx.strokeStyle = "rgba(76, 29, 149, 0.5)"; // Subtle purple
+        canvasCtx.lineWidth = 1;
+
+        [C4_FREQ, E4_FREQ, G4_FREQ].forEach((freq) => {
+          // Calculate the bin index for the reference frequency
+          const bin = Math.round(freq / frequencyResolution);
+          const xPos = bin * (barWidth + 1);
+
+          // Draw a vertical line for the note
+          canvasCtx.beginPath();
+          canvasCtx.setLineDash([5, 5]);
+          canvasCtx.moveTo(xPos, 0);
+          canvasCtx.lineTo(xPos, height);
+          canvasCtx.stroke();
+
+          // Add a label
+          const noteName = frequencyToNoteName(freq);
+          canvasCtx.fillStyle = "rgba(129, 140, 248, 1)"; // Indigo text
+          canvasCtx.font = "12px Inter";
+          canvasCtx.fillText(noteName, xPos + 5, 20);
+        });
+
+        canvasCtx.setLineDash([]); // Reset line dash
+      }
+
+      /**
+       * Initializes the audio context and microphone input.
+       */
+      async function initAudio() {
+        try {
+          // 1. Create Audio Context
+          audioContext = new (window.AudioContext ||
+            window.webkitAudioContext)();
+
+          // 2. Request Microphone Stream
+          const stream = await navigator.mediaDevices.getUserMedia({
+            audio: true,
+          });
+
+          // 3. Create Audio Nodes
+          source = audioContext.createMediaStreamSource(stream);
+          analyser = audioContext.createAnalyser();
+
+          // FFT Size determines the frequency resolution and performance.
+          // A higher number means better resolution but more bins to draw.
+          analyser.fftSize = 2048;
+
+          // Data array to hold the frequency data
+          dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+          // 4. Connect the Nodes: Source -> Analyser
+          source.connect(analyser);
+
+          // 5. Start Drawing Loop
+          draw();
+
+          // Update UI State
+          startButton.classList.add("hidden");
+          stopButton.classList.remove("hidden");
+          stopButton.disabled = false;
+          statusMessage.textContent =
+            "Listening to microphone input. Play a chord (e.g., C-E-G) to see its components!";
+        } catch (err) {
+          console.error("Error accessing microphone:", err);
+          statusMessage.textContent = `Error: Could not access microphone. Check permissions. (${err.name})`;
+          cleanupAudio();
+        }
+      }
+
+      // --- Event Listeners and Initialization ---
+
+      // Handle window resize to keep the canvas responsive
+      window.addEventListener("resize", resizeCanvas);
+
+      // Set initial canvas dimensions
+      resizeCanvas();
+
+      // Start button handler
+      startButton.addEventListener("click", () => {
+        startButton.disabled = true; // Prevent double clicks
+        initAudio();
+      });
+
+      // Stop button handler
+      stopButton.addEventListener("click", cleanupAudio);
+
+      // Cleanup when the window is closed (best practice)
+      window.addEventListener("beforeunload", cleanupAudio);
+    </script>
+  </body>
+</html>

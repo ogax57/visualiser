@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Permanent Dynamic Dot Visualizer</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      /*
+        =============================
+        BASE STYLES & LAYOUT
+        =============================
+        */
+      :root {
+        /* Define a color palette for consistency */
+        --color-bg-dark: #0f172a;
+        --color-bg-light: #1e293b;
+        --color-primary: #3b82f6;
+        --color-text-main: #f1f5f9;
+        --color-text-dim: #94a3b8;
+        --color-canvas-bg: #0d121c;
+      }
+
+      body {
+        background: var(--color-bg-dark);
+        color: var(--color-text-main);
+        margin: 0;
+        /* Use the loaded modern font */
+        font-family: "Space Grotesk", system-ui, sans-serif;
+        display: flex;
+        justify-content: center;
+        align-items: center; /* Center content vertically */
+        padding: 20px;
+        min-height: 100vh;
+        box-sizing: border-box;
+      }
+
+      .wrap {
+        width: 1200px; /* Slightly wider overall container */
+        max-width: 95vw;
+        display: flex;
+        gap: 25px; /* Increased gap */
+        height: calc(100vh - 40px); /* Use available height dynamically */
+        max-height: 800px; /* Set a max height for desktop view */
+      }
+
+      /*
+        =============================
+        VISUALIZER & DOT STYLES
+        =============================
+        */
+      .visualizer-area {
+        flex: 1;
+        background: var(--color-canvas-bg);
+        border-radius: 12px;
+        position: relative;
+        overflow: hidden;
+        min-height: 400px;
+        /* Subtle border for separation */
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        /* Optional: subtle background pattern */
+        /* background-image: radial-gradient(#1e293b 1px, transparent 0);
+            background-size: 20px 20px; */
+      }
+
+      .dot {
+        position: absolute;
+        border-radius: 50%;
+        pointer-events: none;
+        /* Enhanced glow effect with box-shadow */
+        box-shadow: 0 0 10px currentColor, 0 0 20px currentColor;
+        filter: blur(1px);
+        transform: translate(-50%, -50%);
+        opacity: 1;
+        z-index: 1;
+        /* **UPDATED:** Set a very long base transition time for the dot decay in CSS */
+        transition: width 30s ease-out, height 30s ease-out, opacity 30s linear;
+      }
+
+      /*
+        =============================
+        CONTROLS / RIGHT PANEL
+        =============================
+        */
+      .right {
+        width: 300px; /* Slightly wider panel for better spacing */
+        background: var(--color-bg-light);
+        padding: 20px;
+        border-radius: 12px;
+        align-self: flex-start;
+        display: flex;
+        flex-direction: column;
+        gap: 15px; /* Spacing between controls */
+        z-index: 10;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+      }
+
+      .section-header {
+        color: var(--color-text-dim);
+        font-size: 14px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        margin-bottom: -5px;
+      }
+
+      /* Typography for detected note */
+      #noteLabel {
+        font-size: 54px; /* Larger */
+        font-weight: 700;
+        color: var(--color-primary); /* Use primary color */
+        line-height: 1;
+      }
+
+      #freqLabel {
+        font-size: 16px;
+      }
+
+      .small {
+        font-size: 14px; /* Slightly larger small text */
+        color: var(--color-text-dim);
+        font-weight: 400;
+      }
+
+      /*
+        =============================
+        FORM ELEMENTS
+        =============================
+        */
+      button {
+        padding: 10px 15px;
+        background: var(--color-primary);
+        color: white;
+        border: none;
+        border-radius: 8px;
+        cursor: pointer;
+        font-weight: 700;
+        transition: background 0.2s, transform 0.1s;
+      }
+
+      button:hover:enabled {
+        background: #2563eb;
+      }
+
+      button:active:enabled {
+        transform: translateY(1px);
+      }
+
+      button:disabled {
+        background: #475569;
+        color: #94a3b8;
+        cursor: not-allowed;
+      }
+
+      /* Styling the range input (sensitivity slider) */
+      input[type="range"] {
+        -webkit-appearance: none;
+        width: 100%;
+        height: 8px;
+        background: #334155;
+        border-radius: 4px;
+        cursor: pointer;
+        margin: 10px 0;
+      }
+
+      input[type="range"]::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        height: 16px;
+        width: 16px;
+        border-radius: 50%;
+        background: var(--color-primary);
+        cursor: pointer;
+        margin-top: -4px; /* Center thumb vertically */
+      }
+
+      /*
+        =============================
+        RESPONSIVENESS (for smaller screens)
+        =============================
+        */
+      @media (max-width: 900px) {
+        .wrap {
+          flex-direction: column;
+          height: auto;
+          max-height: none;
+        }
+
+        .right {
+          width: 100%;
+          order: -1; /* Move controls above the visualizer on mobile */
+        }
+
+        .visualizer-area {
+          width: 100%;
+          min-height: 300px; /* Taller on mobile for visibility */
+        }
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="wrap">
+      <div class="visualizer-area" id="visualizerArea"></div>
+
+      <div class="right">
+        <div class="section-header">Detection Status</div>
+        <div class="note-display">
+          <div class="small">Detected Note</div>
+          <div id="noteLabel">—</div>
+          <div id="freqLabel" class="small">—</div>
+        </div>
+
+        <div class="button-group" style="display: flex; gap: 10px">
+          <button id="startBtn" style="flex: 1">▶️ Start</button>
+          <button id="stopBtn" disabled style="flex: 1">⏹️ Stop</button>
+        </div>
+
+        <div>
+          <label class="small">Sensitivity (Tolerance for Cents)</label>
+          <input
+            id="sensitivity"
+            type="range"
+            min="0.2"
+            max="1.6"
+            step="0.05"
+            value="0.85"
+          />
+        </div>
+      </div>
+    </div>
+
+    <script>
+      /* The JavaScript logic below is functional */
+
+      /* ---------- 12 NOTE SETUP (UNCHANGED) ---------- */
+
+      const NOTES = [
+        "C",
+        "C#",
+        "D",
+        "D#",
+        "E",
+        "F",
+        "F#",
+        "G",
+        "G#",
+        "A",
+        "A#",
+        "B",
+      ];
+      const COLORS = {
+        C: "#ff6666",
+        "C#": "#ff9966",
+        D: "#ffcc66",
+        "D#": "#e6ff66",
+        E: "#b3ff66",
+        F: "#66ff99",
+        "F#": "#66ffc7",
+        G: "#66d5ff",
+        "G#": "#668cff",
+        A: "#9966ff",
+        "A#": "#c466ff",
+        B: "#ff66e0",
+      };
+
+      const visualizerArea = document.getElementById("visualizerArea");
+      /* ---------- AUDIO SETUP (Unchanged) ---------- */
+      let audioCtx, analyser, sourceNode, mediaStream;
+      let running = false;
+      const bufferLen = 2048;
+
+      function autoCorrelate(buf, sampleRate) {
+        let SIZE = buf.length;
+        let rms = 0;
+        for (let i = 0; i < SIZE; i++) rms += buf[i] * buf[i];
+        rms = Math.sqrt(rms / SIZE);
+        if (rms < 0.01) return -1;
+
+        let bestOffset = -1,
+          bestCorrelation = 0;
+        for (let offset = 8; offset < 1000; offset++) {
+          let corr = 0;
+          for (let i = 0; i < 1000; i++) {
+            corr += buf[i] * buf[i + offset];
+          }
+          corr = corr / 1000;
+          if (corr > bestCorrelation) {
+            bestCorrelation = corr;
+            bestOffset = offset;
+          }
+        }
+        if (bestCorrelation > 0.01) {
+          return sampleRate / bestOffset;
+        }
+        return -1;
+      }
+
+      function frequencyToNote(freq) {
+        const midi = 69 + 12 * Math.log2(freq / 440);
+        const m = Math.round(midi);
+        const name = NOTES[(m + 120) % 12];
+        return {
+          name,
+          octave: Math.floor(m / 12) - 1,
+          cents: Math.round((midi - m) * 100),
+        };
+      }
+
+      /* ---------- DOT LOGIC (MODIFIED FOR BIGGER DOTS AND LONGER FADE) ---------- */
+
+      function spawnDot(note, octave) {
+        // **CHANGE 1: INCREASED BASE SIZE**
+        const baseSize = 60 + Math.random() * 70; // Increased from 40-50 to 60-70 for bigger dots
+        const size = baseSize + octave * 5;
+
+        // **CHANGE 2: INCREASED FADING TIME**
+        const FADE_TIME_SECONDS = 15; // Increased from 8 seconds to 15 seconds
+
+        // 2. Create and position the new dot randomly
+        const horizontalScaleFactor = 0.5;
+        const verticalScaleFactor = 0.05;
+
+        const dot = document.createElement("div");
+        dot.className = "dot";
+        visualizerArea.appendChild(dot);
+        dot.style.left = Math.random() * 100 + "%";
+        dot.style.top = Math.random() * 100 + "%";
+        dot.style.background = COLORS[note];
+        dot.style.color = COLORS[note];
+
+        // 3. Initial pulse - set the starting size
+        dot.style.width = size + "px";
+        dot.style.height = size + "px";
+        dot.style.opacity = 1.0;
+
+        // 4. Animate to shrink to a small, persistent glow (slow transition)
+        setTimeout(() => {
+          // We use the CSS transition property now, but we'll set it here to be explicit
+          // dot.style.transition = `width ${FADE_TIME_SECONDS}s ease-out, height ${FADE_TIME_SECONDS}s ease-out, opacity ${FADE_TIME_SECONDS}s linear`;
+
+          dot.style.width = size * horizontalScaleFactor + "px";
+          dot.style.height = size * verticalScaleFactor + "px";
+          dot.style.opacity = 0.05;
+        }, 50);
+
+        // **CHANGE 3: REMOVAL TIME MATCHES FADE TIME**
+        setTimeout(() => {
+          dot.remove();
+        }, FADE_TIME_SECONDS * 1000);
+      }
+
+      /* ---------- DETECTION LOOP (UNCHANGED) ---------- */
+
+      const noteLabel = document.getElementById("noteLabel");
+      const freqLabel = document.getElementById("freqLabel");
+      const sens = document.getElementById("sensitivity");
+
+      function detectLoop() {
+        if (!running) return;
+
+        const buffer = new Float32Array(bufferLen);
+        analyser.getFloatTimeDomainData(buffer);
+        const freq = autoCorrelate(buffer, audioCtx.sampleRate);
+
+        if (freq !== -1) {
+          const note = frequencyToNote(freq);
+          // --- Check for F#8 and ignore it ---
+          if (note.name === "F#" && note.octave === 8) {
+            noteLabel.textContent = "F#8 (Ignored)";
+            freqLabel.textContent = freq.toFixed(1) + " Hz";
+            setTimeout(detectLoop, 60);
+            return;
+          }
+          // --------------------------------------------
+          noteLabel.textContent = note.name + note.octave;
+          freqLabel.textContent = freq.toFixed(1) + " Hz";
+
+          const accept = 40 * parseFloat(sens.value);
+          if (Math.abs(note.cents) <= accept) {
+            spawnDot(note.name, note.octave);
+          }
+        } else {
+          noteLabel.textContent = "—";
+          freqLabel.textContent = "—";
+        }
+
+        setTimeout(detectLoop, 60);
+      }
+
+      /* ---------- START / STOP (Unchanged) ---------- */
+
+      const startBtn = document.getElementById("startBtn");
+      const stopBtn = document.getElementById("stopBtn");
+
+      startBtn.onclick = async () => {
+        if (running) return;
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+          audio: true,
+        });
+        audioCtx = new AudioContext();
+        analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 2048;
+        sourceNode = audioCtx.createMediaStreamSource(mediaStream);
+        sourceNode.connect(analyser);
+        running = true;
+        detectLoop();
+        startBtn.disabled = true;
+        stopBtn.disabled = false;
+      };
+
+      stopBtn.onclick = () => {
+        running = false;
+        if (mediaStream) mediaStream.getTracks().forEach((t) => t.stop());
+        startBtn.disabled = false;
+        stopBtn.disabled = true;
+        noteLabel.textContent = "—";
+        freqLabel.textContent = "—";
+      };
+    </script>
+  </body>
+</html>

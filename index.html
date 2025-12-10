@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>12-Note Grid Guitar Visualizer</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <style>
+      body {
+        background: #0f1720;
+        color: #e6eef6;
+        margin: 0;
+        font-family: system-ui;
+        display: flex;
+        justify-content: center;
+        padding: 20px;
+      }
+      .wrap {
+        width: 1100px;
+        max-width: 95vw;
+        display: flex;
+        gap: 20px;
+      }
+      .right {
+        width: 280px;
+        background: #0b1220;
+        padding: 12px;
+        border-radius: 10px;
+      }
+      .grid {
+        flex: 1;
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 10px;
+      }
+      .cell {
+        background: #06111a;
+        height: 160px;
+        border-radius: 8px;
+        position: relative;
+        overflow: hidden;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: #9fb0c8;
+        font-size: 20px;
+      }
+      .dot {
+        position: absolute;
+        border-radius: 50%;
+        pointer-events: none;
+      }
+      button {
+        padding: 6px 10px;
+        background: #14324a;
+        color: white;
+        border-radius: 8px;
+      }
+      .small {
+        font-size: 12px;
+        color: #9fb0c8;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="grid" id="noteGrid"></div>
+
+      <div class="right">
+        <div class="small">Detected</div>
+        <div id="noteLabel" style="font-size: 36px">—</div>
+        <div id="freqLabel" class="small">—</div>
+
+        <br />
+        <button id="startBtn">Start</button>
+        <button id="stopBtn" disabled>Stop</button>
+        <br /><br />
+
+        <label class="small">Sensitivity</label>
+        <input
+          id="sensitivity"
+          type="range"
+          min="0.2"
+          max="1.6"
+          step="0.05"
+          value="0.85"
+        />
+      </div>
+    </div>
+
+    <script>
+      /* ---------- 12 NOTE SETUP ---------- */
+
+      const NOTES = [
+        "C",
+        "C#",
+        "D",
+        "D#",
+        "E",
+        "F",
+        "F#",
+        "G",
+        "G#",
+        "A",
+        "A#",
+        "B",
+      ];
+      const COLORS = {
+        C: "#ff4d4d",
+        "C#": "#ff884d",
+        D: "#ffcc4d",
+        "D#": "#e6ff4d",
+        E: "#b3ff4d",
+        F: "#4dff88",
+        "F#": "#4dffc7",
+        G: "#4dd5ff",
+        "G#": "#4d8cff",
+        A: "#7c4dff",
+        "A#": "#c44dff",
+        B: "#ff4dd8",
+      };
+
+      const grid = document.getElementById("noteGrid");
+      const cells = {};
+      NOTES.forEach((n) => {
+        const c = document.createElement("div");
+        c.className = "cell";
+        c.innerHTML = n;
+        grid.appendChild(c);
+        cells[n] = { el: c, dots: [] };
+      });
+
+      /* ---------- AUDIO SETUP ---------- */
+
+      let audioCtx, analyser, sourceNode, mediaStream;
+      let running = false;
+      const bufferLen = 2048;
+
+      function autoCorrelate(buf, sampleRate) {
+        let SIZE = buf.length;
+        let rms = 0;
+        for (let i = 0; i < SIZE; i++) rms += buf[i] * buf[i];
+        rms = Math.sqrt(rms / SIZE);
+        if (rms < 0.01) return -1;
+
+        let bestOffset = -1,
+          bestCorrelation = 0;
+        for (let offset = 8; offset < 1000; offset++) {
+          let corr = 0;
+          for (let i = 0; i < 1000; i++) {
+            corr += buf[i] * buf[i + offset];
+          }
+          corr = corr / 1000;
+          if (corr > bestCorrelation) {
+            bestCorrelation = corr;
+            bestOffset = offset;
+          }
+        }
+        if (bestCorrelation > 0.01) {
+          return sampleRate / bestOffset;
+        }
+        return -1;
+      }
+
+      function frequencyToNote(freq) {
+        const midi = 69 + 12 * Math.log2(freq / 440);
+        const m = Math.round(midi);
+        const name = NOTES[(m + 120) % 12];
+        return {
+          name,
+          octave: Math.floor(m / 12) - 1,
+          cents: Math.round((midi - m) * 100),
+        };
+      }
+
+      /* ---------- DOT LOGIC ---------- */
+
+      function spawnOrGrowDot(note) {
+        const cell = cells[note];
+        const size = 50 + Math.random() * 20;
+
+        // Reuse a dot if possible
+        let dot = cell.dots.length
+          ? cell.dots[Math.floor(Math.random() * cell.dots.length)]
+          : null;
+
+        if (!dot) {
+          dot = document.createElement("div");
+          dot.className = "dot";
+          cell.el.appendChild(dot);
+          cell.dots.push(dot);
+        }
+
+        // pulse big
+        dot.style.width = size + "px";
+        dot.style.height = size + "px";
+        dot.style.background = COLORS[note];
+        dot.style.left = 10 + Math.random() * 80 + "%";
+        dot.style.top = 10 + Math.random() * 80 + "%";
+
+        // animate shrink slowly but never vanish
+        setTimeout(() => {
+          dot.style.transition = "width 1.2s linear, height 1.2s linear";
+          dot.style.width = size * 0.35 + "px";
+          dot.style.height = size * 0.35 + "px";
+        }, 20);
+      }
+
+      /* ---------- DETECTION LOOP ---------- */
+
+      const noteLabel = document.getElementById("noteLabel");
+      const freqLabel = document.getElementById("freqLabel");
+      const sens = document.getElementById("sensitivity");
+
+      function detectLoop() {
+        if (!running) return;
+
+        const buffer = new Float32Array(bufferLen);
+        analyser.getFloatTimeDomainData(buffer);
+        const freq = autoCorrelate(buffer, audioCtx.sampleRate);
+
+        if (freq !== -1) {
+          const note = frequencyToNote(freq);
+          noteLabel.textContent = note.name + note.octave;
+          freqLabel.textContent = freq.toFixed(1) + " Hz";
+
+          const accept = 40 * parseFloat(sens.value);
+          if (Math.abs(note.cents) <= accept) {
+            spawnOrGrowDot(note.name);
+          }
+        } else {
+          noteLabel.textContent = "—";
+          freqLabel.textContent = "—";
+        }
+
+        setTimeout(detectLoop, 60);
+      }
+
+      /* ---------- START / STOP ---------- */
+
+      document.getElementById("startBtn").onclick = async () => {
+        if (running) return;
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+          audio: true,
+        });
+        audioCtx = new AudioContext();
+        analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 2048;
+        sourceNode = audioCtx.createMediaStreamSource(mediaStream);
+        sourceNode.connect(analyser);
+        running = true;
+        detectLoop();
+        startBtn.disabled = true;
+        stopBtn.disabled = false;
+      };
+
+      document.getElementById("stopBtn").onclick = () => {
+        running = false;
+        if (mediaStream) mediaStream.getTracks().forEach((t) => t.stop());
+        startBtn.disabled = false;
+        stopBtn.disabled = true;
+      };
+    </script>
+  </body>
+</html>

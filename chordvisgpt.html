@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Only-C Piano Roll (C3 → C5)</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <style>
+      :root {
+        --bg: #071021;
+        --panel: #0b2433;
+        --muted: #9fb0c9;
+        --accent: #66c2ff;
+        color: #e6f0fb;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--e6f0fb);
+        font-family: Inter, system-ui, Segoe UI, Roboto, Arial;
+        padding: 18px;
+      }
+      .wrap {
+        max-width: 1100px;
+        margin: 0 auto;
+      }
+      h1 {
+        font-size: 20px;
+        margin: 0 0 8px;
+      }
+      .controls {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        margin-bottom: 12px;
+      }
+      input[type="file"] {
+        background: #0f2a3b;
+        color: var(--e6f0fb);
+        padding: 8px;
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.04);
+      }
+      button {
+        background: var(--accent);
+        border: none;
+        color: #032033;
+        padding: 8px 10px;
+        border-radius: 8px;
+        cursor: pointer;
+      }
+      .card {
+        background: linear-gradient(180deg, var(--panel), #06202a);
+        padding: 12px;
+        border-radius: 10px;
+        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.6);
+      }
+      canvas {
+        display: block;
+        width: 100%;
+        border-radius: 8px;
+        background: #03101a;
+      }
+      .small {
+        color: var(--muted);
+        font-size: 13px;
+        margin-top: 8px;
+      }
+      .row {
+        display: flex;
+        gap: 12px;
+        margin-top: 10px;
+      }
+      .left {
+        width: 110px;
+      }
+      .legend {
+        font-weight: 600;
+      }
+      @media (max-width: 700px) {
+        .left {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Only-C Piano Roll (C3 → C5)</h1>
+      <div class="small">
+        Detects only notes named "C" (C3, C4, C5) in an audio file and draws a
+        piano-roll timeline showing where those Cs occur.
+      </div>
+
+      <div class="controls" style="margin-top: 12px">
+        <input id="file" type="file" accept="audio/*" />
+        <label style="display: inline-flex; align-items: center; gap: 8px">
+          Window:
+          <select
+            id="win"
+            style="
+              margin-left: 6px;
+              padding: 6px;
+              border-radius: 6px;
+              background: #08212b;
+              color: var(--e6f0fb);
+            "
+          >
+            <option value="1024">1024</option>
+            <option value="2048" selected>2048</option>
+            <option value="4096">4096</option>
+          </select>
+        </label>
+        <label style="display: inline-flex; align-items: center; gap: 8px">
+          Hop:
+          <select
+            id="hop"
+            style="
+              margin-left: 6px;
+              padding: 6px;
+              border-radius: 6px;
+              background: #08212b;
+              color: var(--e6f0fb);
+            "
+          >
+            <option value="256">256</option>
+            <option value="512" selected>512</option>
+            <option value="1024">1024</option>
+          </select>
+        </label>
+        <button id="analyze">Analyze</button>
+        <button id="play" disabled>Play</button>
+        <button id="export" disabled>Export PNG</button>
+      </div>
+
+      <div class="card" style="padding: 10px">
+        <div style="display: flex; gap: 12px">
+          <div
+            class="left"
+            style="display: flex; flex-direction: column; gap: 8px"
+          >
+            <div class="legend">Piano</div>
+            <div
+              style="
+                height: 64px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                border-radius: 6px;
+                background: #082b37;
+              "
+            >
+              C5
+            </div>
+            <div
+              style="
+                height: 64px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                border-radius: 6px;
+                background: #08323b;
+                margin-top: 8px;
+              "
+            >
+              C4
+            </div>
+            <div
+              style="
+                height: 64px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                border-radius: 6px;
+                background: #083b3f;
+                margin-top: 8px;
+              "
+            >
+              C3
+            </div>
+          </div>
+
+          <div style="flex: 1">
+            <canvas id="roll" width="1200" height="220"></canvas>
+            <div class="small" id="info">No file loaded.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="small" style="margin-top: 12px">
+        Notes: Uses autocorrelation per window. Detection is tuned for musical
+        pitch range C3–C5. False positives are possible on noisy/polyphonic
+        material.
+      </div>
+    </div>
+
+    <script>
+      (function () {
+        const fileEl = document.getElementById("file");
+        const analyzeBtn = document.getElementById("analyze");
+        const playBtn = document.getElementById("play");
+        const exportBtn = document.getElementById("export");
+        const winEl = document.getElementById("win");
+        const hopEl = document.getElementById("hop");
+        const info = document.getElementById("info");
+        const canvas = document.getElementById("roll");
+        const ctx = canvas.getContext("2d");
+
+        let audioCtx = null;
+        let audioBuffer = null;
+        let sourceNode = null;
+        let animationId = null;
+
+        // Constants
+        const NOTE_NAMES = [
+          "C",
+          "C#",
+          "D",
+          "D#",
+          "E",
+          "F",
+          "F#",
+          "G",
+          "G#",
+          "A",
+          "A#",
+          "B",
+        ];
+
+        // Acceptable note range C3 (MIDI 48) .. C5 (MIDI 72)
+        const MIN_MIDI = 48,
+          MAX_MIDI = 72;
+
+        // We'll collect events: {startFrame, endFrame, midi}
+        let cEvents = [];
+        let frameRate = 0;
+        let frames = 0;
+
+        // Utility: convert frequency -> midi number
+        function freqToMidi(freq) {
+          return 69 + 12 * Math.log2(freq / 440);
+        }
+        function midiToName(midi) {
+          const r = Math.round(midi);
+          const name = NOTE_NAMES[((r % 12) + 12) % 12];
+          const octave = Math.floor(r / 12) - 1;
+          return { name, octave, rounded: r };
+        }
+
+        // Autocorrelation pitch detection (returns freq or -1)
+        // We search lags corresponding to minFreq..maxFreq
+        function detectPitchAutocorr(
+          buf,
+          sampleRate,
+          minFreq = 100,
+          maxFreq = 1000
+        ) {
+          // buf is Float32Array of windowed audio (mono)
+          const size = buf.length;
+          let minLag = Math.floor(sampleRate / maxFreq);
+          let maxLag = Math.floor(sampleRate / minFreq);
+          if (minLag < 2) minLag = 2;
+          if (maxLag >= size) maxLag = size - 1;
+
+          // compute autocorrelation for each lag
+          let bestLag = -1;
+          let bestVal = 0;
+          // normalization: energy at 0 lag
+          let energy = 0;
+          for (let i = 0; i < size; i++) energy += buf[i] * buf[i];
+          if (energy < 1e-8) return -1; // silent
+
+          for (let lag = minLag; lag <= maxLag; lag++) {
+            let sum = 0;
+            for (let i = 0; i < size - lag; i++) {
+              sum += buf[i] * buf[i + lag];
+            }
+            // normalized correlation
+            const val = sum / Math.sqrt(energy * energy); // approximate
+            if (val > bestVal) {
+              bestVal = val;
+              bestLag = lag;
+            }
+          }
+          if (bestLag <= 0) return -1;
+          // basic quality threshold
+          if (bestVal < 0.15) return -1; // low confidence
+          // parabolic interpolation for better lag estimate
+          const getCorr = (lag) => {
+            let s = 0;
+            for (let i = 0; i < size - lag; i++) s += buf[i] * buf[i + lag];
+            return s;
+          };
+          let lag = bestLag;
+          let y0 = getCorr(lag - 1),
+            y1 = getCorr(lag),
+            y2 = getCorr(lag + 1);
+          // avoid division by zero
+          const denom = y0 - 2 * y1 + y2;
+          let refinedLag = lag;
+          if (denom !== 0) refinedLag = lag + (y0 - y2) / (2 * denom);
+          const freq = sampleRate / refinedLag;
+          return freq;
+        }
+
+        // Window function (hann)
+        function applyHann(buf) {
+          const n = buf.length;
+          for (let i = 0; i < n; i++) {
+            const w = 0.5 * (1 - Math.cos((2 * Math.PI * i) / (n - 1)));
+            buf[i] *= w;
+          }
+          return buf;
+        }
+
+        // Analyze the buffer and extract C note events
+        function analyzeBuffer(buf, sr, winSize, hopSize) {
+          cEvents = [];
+          const totalFrames = Math.max(
+            1,
+            Math.floor((buf.length - winSize) / hopSize) + 1
+          );
+          frameRate = sr / hopSize; // frames per second approximate
+          frames = totalFrames;
+          const mono = buf; // Float32Array already mono
+
+          // For each window, detect pitch
+          const midiSeq = new Array(totalFrames).fill(null);
+          for (let f = 0; f < totalFrames; f++) {
+            const start = f * hopSize;
+            const frame = mono.subarray(start, start + winSize);
+            if (frame.length < winSize) {
+              // zero-pad
+              const tmp = new Float32Array(winSize);
+              tmp.set(frame);
+              applyHann(tmp);
+              const freq = detectPitchAutocorr(tmp, sr);
+              if (freq > 0) {
+                const midi = freqToMidi(freq);
+                midiSeq[f] = midi;
+              }
+            } else {
+              const tmp = new Float32Array(winSize);
+              tmp.set(frame);
+              applyHann(tmp);
+              const freq = detectPitchAutocorr(tmp, sr);
+              if (freq > 0) {
+                midiSeq[f] = freqToMidi(freq);
+              }
+            }
+          }
+
+          // Find contiguous segments where rounded note name === 'C' and midi in [48,72]
+          let cur = null;
+          for (let i = 0; i < totalFrames; i++) {
+            const mv = midiSeq[i];
+            if (mv === null) {
+              // no pitch
+              if (cur) {
+                // close
+                cur.end = i - 1;
+                // only keep if it's a C in range
+                const mid = Math.round(cur.midi);
+                const { name, octave } = midiToName(mid);
+                if (name === "C" && mid >= MIN_MIDI && mid <= MAX_MIDI) {
+                  cEvents.push({
+                    startFrame: cur.start,
+                    endFrame: cur.end,
+                    midi: mid,
+                  });
+                }
+                cur = null;
+              }
+            } else {
+              const mid = Math.round(mv);
+              const { name, octave } = midiToName(mid);
+              if (name === "C" && mid >= MIN_MIDI && mid <= MAX_MIDI) {
+                if (!cur) cur = { start: i, end: i, midi: mid };
+                else cur.end = i;
+              } else {
+                if (cur) {
+                  cur.end = i - 1;
+                  const mid2 = Math.round(cur.midi);
+                  const { name: name2 } = midiToName(mid2);
+                  if (name2 === "C" && mid2 >= MIN_MIDI && mid2 <= MAX_MIDI) {
+                    cEvents.push({
+                      startFrame: cur.start,
+                      endFrame: cur.end,
+                      midi: mid2,
+                    });
+                  }
+                  cur = null;
+                }
+              }
+            }
+          }
+          // close last
+          if (cur) {
+            cur.end = totalFrames - 1;
+            const mid2 = Math.round(cur.midi);
+            const { name: name2 } = midiToName(mid2);
+            if (name2 === "C" && mid2 >= MIN_MIDI && mid2 <= MAX_MIDI) {
+              cEvents.push({
+                startFrame: cur.start,
+                endFrame: cur.end,
+                midi: mid2,
+              });
+            }
+            cur = null;
+          }
+
+          return { events: cEvents, frames: totalFrames, frameRate };
+        }
+
+        // Render piano roll: rows for C5, C4, C3 (top->bottom)
+        function renderRoll(events, totalFrames, hopSize, sr) {
+          // canvas stretching to width
+          const pxPerFrame = Math.max(
+            2,
+            Math.floor(canvas.clientWidth / Math.max(300, totalFrames))
+          );
+          const width = Math.max(canvas.clientWidth, totalFrames * pxPerFrame);
+          const height = (canvas.height = 220);
+          canvas.width = width * devicePixelRatio;
+          canvas.height = height * devicePixelRatio;
+          ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+          ctx.clearRect(0, 0, width, height);
+
+          // background
+          ctx.fillStyle = "#03141a";
+          ctx.fillRect(0, 0, width, height);
+
+          // rows
+          const rowH = (height - 20) / 3;
+          const rowGap = 6;
+          const y0 = 10;
+          const rows = [
+            { midi: 72, label: "C5", y: y0, color: "#ff9f6b" },
+            { midi: 60, label: "C4", y: y0 + rowH + rowGap, color: "#66c2ff" },
+            {
+              midi: 48,
+              label: "C3",
+              y: y0 + (rowH + rowGap) * 2,
+              color: "#b9ff8a",
+            },
+          ];
+
+          // draw grid/time markers
+          ctx.fillStyle = "#0b2a33";
+          for (let r = 0; r < rows.length; r++) {
+            ctx.fillRect(0, rows[r].y - 2, width, rowH + 4);
+          }
+
+          // draw time markers every second
+          const seconds = Math.ceil((totalFrames * hopSize) / sr);
+          ctx.fillStyle = "rgba(255,255,255,0.06)";
+          for (let s = 0; s <= seconds; s++) {
+            const x = Math.round(((s * sr) / hopSize) * pxPerFrame);
+            ctx.fillRect(x, 0, 1, height);
+            ctx.fillStyle = "rgba(200,220,240,0.12)";
+            ctx.font = "11px sans-serif";
+            ctx.fillText(s + "s", x + 2, height - 4);
+            ctx.fillStyle = "rgba(255,255,255,0.06)";
+          }
+
+          // draw events
+          for (const ev of events) {
+            // map midi to row
+            let rowIndex = null;
+            if (ev.midi >= 72 - 1 && ev.midi <= 72 + 1) rowIndex = 0; // C5
+            else if (ev.midi >= 60 - 1 && ev.midi <= 60 + 1) rowIndex = 1; // C4
+            else if (ev.midi >= 48 - 1 && ev.midi <= 48 + 1) rowIndex = 2; // C3
+            else {
+              // if rounding mismatch, decide by octave
+              const octave = Math.floor(ev.midi / 12) - 1;
+              if (octave === 5) rowIndex = 0;
+              else if (octave === 4) rowIndex = 1;
+              else if (octave === 3) rowIndex = 2;
+            }
+            if (rowIndex === null) continue;
+            const x1 = ev.startFrame * pxPerFrame;
+            const x2 = (ev.endFrame + 1) * pxPerFrame;
+            const w = Math.max(2, x2 - x1 - 1);
+            const ry = rows[rowIndex].y;
+            const rh = rowH;
+            ctx.fillStyle = rows[rowIndex].color;
+            ctx.globalAlpha = 0.95;
+            ctx.fillRect(x1 + 1, ry + 4, w, rh - 8);
+            // border
+            ctx.strokeStyle = "rgba(0,0,0,0.4)";
+            ctx.lineWidth = 1;
+            ctx.strokeRect(x1 + 1, ry + 4, w, rh - 8);
+            ctx.globalAlpha = 1.0;
+            // label small midi
+            ctx.fillStyle = "#022229";
+            ctx.font = "11px sans-serif";
+            ctx.fillText(
+              "C" + ((rows[rowIndex].midi / 12) | 0),
+              x1 + 4,
+              ry + 16
+            );
+          }
+
+          info.textContent = `Detected ${events.length} C segment(s). (frames: ${totalFrames}, px/frame: ${pxPerFrame})`;
+          exportBtn.disabled = false;
+        }
+
+        // Convert input audio to mono Float32Array (mix down if stereo)
+        function toMono(buffer) {
+          if (buffer.numberOfChannels === 1)
+            return buffer.getChannelData(0).slice(0);
+          const ch0 = buffer.getChannelData(0);
+          const ch1 = buffer.getChannelData(1);
+          const out = new Float32Array(buffer.length);
+          for (let i = 0; i < buffer.length; i++) {
+            out[i] = 0.5 * (ch0[i] + ch1[i]);
+          }
+          return out;
+        }
+
+        // handle file loading
+        fileEl.addEventListener("change", async (ev) => {
+          const f = ev.target.files && ev.target.files[0];
+          if (!f) return;
+          info.textContent = "Decoding audio...";
+          if (!audioCtx)
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+          try {
+            const ab = await f.arrayBuffer();
+            audioBuffer = await audioCtx.decodeAudioData(ab);
+            info.textContent = `Loaded: ${
+              Math.round(audioBuffer.duration * 100) / 100
+            }s, ${audioBuffer.sampleRate}Hz, ${audioBuffer.numberOfChannels}ch`;
+            playBtn.disabled = false;
+            exportBtn.disabled = true;
+          } catch (err) {
+            console.error(err);
+            info.textContent = "Failed to decode audio.";
+          }
+        });
+
+        analyzeBtn.addEventListener("click", async () => {
+          if (!audioBuffer) {
+            info.textContent = "Load an audio file first.";
+            return;
+          }
+          const winSize = parseInt(winEl.value, 10);
+          const hopSize = parseInt(hopEl.value, 10);
+          info.textContent = "Analyzing...";
+          // Convert to mono Float32Array
+          const mono = toMono(audioBuffer);
+          // Run analysis (this may take some time for long files)
+          setTimeout(() => {
+            const res = analyzeBuffer(
+              mono,
+              audioBuffer.sampleRate,
+              winSize,
+              hopSize
+            );
+            // res.events is cEvents
+            renderRoll(res.events, res.frames, hopSize, audioBuffer.sampleRate);
+            // enable playback with cursor
+            exportBtn.disabled = false;
+          }, 50);
+        });
+
+        // playback with cursor (optional)
+        playBtn.addEventListener("click", async () => {
+          if (!audioBuffer) return;
+          if (sourceNode) {
+            // stop
+            try {
+              sourceNode.stop();
+            } catch (e) {}
+            sourceNode = null;
+            playBtn.textContent = "Play";
+            if (animationId) cancelAnimationFrame(animationId);
+            return;
+          }
+          if (!audioCtx)
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+          sourceNode = audioCtx.createBufferSource();
+          sourceNode.buffer = audioBuffer;
+          sourceNode.connect(audioCtx.destination);
+          const startTime = audioCtx.currentTime;
+          sourceNode.start(0);
+          playBtn.textContent = "Stop";
+          // animate a cursor moving over the roll
+          const totalFrames =
+            frames ||
+            Math.max(
+              1,
+              Math.floor(
+                (audioBuffer.length - parseInt(winEl.value)) /
+                  parseInt(hopEl.value)
+              ) + 1
+            );
+          const pxPerFrame = Math.max(
+            2,
+            Math.floor(canvas.clientWidth / Math.max(300, totalFrames))
+          );
+          const duration = audioBuffer.duration;
+          function drawCursor() {
+            // re-draw everything? easier to overlay cursor
+            // overlay: redraw a semi-transparent cursor
+            // Clear previous overlay by re-rendering base (cheap for short files)
+            // For efficiency one could preserve base image; we simply redraw base by triggering analyze+render again is heavy;
+            // Instead we draw a translucent line on top and clear it each frame by re-drawing the base stored image.
+            // Simpler approach: paint cursor and then requestAnimationFrame and after done clear by re-rendering roll once at the end.
+            // We'll just draw the cursor and not erase — before drawing we re-render roll to ensure no trail.
+            if (!sourceNode) return;
+            const t = audioCtx.currentTime - startTime;
+            const frac = Math.min(1, t / duration);
+            // compute x
+            const x = Math.round(frac * totalFrames) * pxPerFrame;
+            // re-render base by re-analyzing? Instead save base image in memory on analyze step would be better.
+            // For simplicity: repaint roll by calling renderRoll with previously computed cEvents (we kept them)
+            renderRoll(
+              cEvents,
+              totalFrames,
+              parseInt(hopEl.value),
+              audioBuffer.sampleRate
+            );
+            // draw cursor
+            ctx.fillStyle = "rgba(255,255,255,0.18)";
+            ctx.fillRect(x, 0, 2, canvas.height);
+            if (t < duration) animationId = requestAnimationFrame(drawCursor);
+            else {
+              try {
+                sourceNode.stop();
+              } catch (e) {}
+              sourceNode = null;
+              playBtn.textContent = "Play";
+            }
+          }
+          drawCursor();
+        });
+
+        // Export PNG
+        exportBtn.addEventListener("click", () => {
+          // create image from canvas
+          const exportCanvas = document.createElement("canvas");
+          exportCanvas.width = canvas.width;
+          exportCanvas.height = canvas.height;
+          const ec = exportCanvas.getContext("2d");
+          ec.drawImage(canvas, 0, 0);
+          const url = exportCanvas.toDataURL("image/png");
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = "C_piano_roll.png";
+          a.click();
+        });
+      })();
+    </script>
+  </body>
+</html>
